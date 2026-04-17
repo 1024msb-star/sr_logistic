@@ -40,7 +40,6 @@ def parse_packing_string(val, is_size=False):
         qty = 1
         value_part = line
         
-        # 'x 2 ea', '* 3 boxes' 같은 패턴 찾기
         explicit_match = re.search(r'[xX*]\s*(\d+)\s*(ea|box|bxs|ctns?|boxes)?\b', line, re.IGNORECASE)
         
         if explicit_match:
@@ -48,7 +47,6 @@ def parse_packing_string(val, is_size=False):
                 qty = int(explicit_match.group(1))
                 value_part = line[:explicit_match.start()].strip()
                 
-        # 규격(Size)인 경우: 가로x세로x높이x수량 구조 파악
         if is_size and qty == 1:
             parts = [p.strip() for p in re.split(r'[xX*]', line)]
             if len(parts) == 4 and parts[3].isdigit():
@@ -57,7 +55,6 @@ def parse_packing_string(val, is_size=False):
                 
         total_qty += qty
         
-        # 무게인 경우: 숫자 추출 후 가장 큰 값을 단위 무게로 인식
         if not is_size:
             clean_str = value_part.replace(',', '')
             nums = re.findall(r'\d+(?:\.\d+)?', clean_str)
@@ -83,19 +80,17 @@ try:
     if raw_df.empty:
         st.stop()
 
-    # 데이터 설정
     col_indices = [0, 1, 2, 3, 4, 5, 15, 16, 17, 20, 21]
     max_col = len(raw_df.columns)
     valid_indices = [i for i in col_indices if i < max_col]
 
-    # 🌟 [핵심 변경] 세션 키를 my_data_v2로 변경하여 강제 초기화 유도
-    if 'my_data_v2' not in st.session_state:
+    # 세션 키를 my_data_v3로 변경하여 완벽한 초기화 유도
+    if 'my_data_v3' not in st.session_state:
         selected_df = raw_df.iloc[:, valid_indices].copy()
         
-        # P열(15)과 Q열(16) 데이터 자동 계산 적용
         if 15 < max_col and 16 < max_col:
-            p_col_name = raw_df.columns[15] # 무게 열
-            q_col_name = raw_df.columns[16] # 치수/박스 열
+            p_col_name = raw_df.columns[15]
+            q_col_name = raw_df.columns[16]
             
             def apply_packing_logic(row):
                 w_val = row[p_col_name]
@@ -113,57 +108,111 @@ try:
                     '정리된 규격': p_size['formatted']
                 })
             
-            # 계산된 결과를 새 열로 추가
             calc_df = selected_df.apply(apply_packing_logic, axis=1)
             selected_df = pd.concat([selected_df, calc_df], axis=1)
 
         selected_df.insert(0, '선택', False)
-        st.session_state.my_data_v2 = selected_df
+        if '출처_시트' not in selected_df.columns:
+            selected_df.insert(1, '출처_시트', raw_df['출처_시트'])
+            
+        st.session_state.my_data_v3 = selected_df
 
     if st.button("🔄 구글 시트 최신 데이터로 새로고침"):
         st.cache_data.clear()
-        if 'my_data_v2' in st.session_state:
-            del st.session_state.my_data_v2
+        if 'my_data_v3' in st.session_state:
+            del st.session_state.my_data_v3
         st.rerun()
 
-    # --- 필터 및 검색 ---
-    st.markdown("### 🔎 검색 및 필터")
-    col_search, col_f1 = st.columns([2, 2])
-    with col_search:
-        search_query = st.text_input("⌨️ 통합 검색", placeholder="검색어 입력")
-    
-    all_columns = [col for col in st.session_state.my_data_v2.columns if col != '선택']
-    selected_view_cols = st.multiselect("👁️ 표에 보여줄 열 선택", options=all_columns, default=all_columns)
+    st.divider()
 
-    # 필터 적용
-    temp_df = st.session_state.my_data_v2.copy()
+    # --- 🌟 엑셀 스타일 검색 & 다중 필터 기능 ---
+    st.markdown("### 🔎 검색 및 상세 필터")
+    col_search, col_filter1, col_filter2 = st.columns([2, 1, 1])
+    
+    with col_search:
+        search_query = st.text_input("⌨️ 텍스트 통합 검색", placeholder="거래처명, INVOICE 번호 등 아무거나 입력하세요")
+        
+    with col_filter1:
+        # 필터로 쓸 열 목록 (선택 열은 제외)
+        filter_cols = [col for col in st.session_state.my_data_v3.columns if col != '선택']
+        selected_filter_col = st.selectbox("📂 필터 걸 열 선택", ["선택 안 함"] + filter_cols)
+        
+    with col_filter2:
+        selected_items = []
+        if selected_filter_col != "선택 안 함":
+            # 해당 열의 내용물만 모아서 보여주기 (빈칸 제외)
+            unique_values = st.session_state.my_data_v3[selected_filter_col].dropna().astype(str).unique().tolist()
+            selected_items = st.multiselect("📌 항목 체크", unique_values, placeholder="원하는 항목 고르기")
+
+    # --- 👁️ 열 숨기기/보이기 기능 ---
+    st.write("")
+    all_columns = [col for col in st.session_state.my_data_v3.columns if col != '선택']
+    selected_view_cols = st.multiselect(
+        "👁️ 표에 보여줄 열 선택 (여기서 제외하면 메일 양식에서도 빠집니다)", 
+        options=all_columns, 
+        default=all_columns
+    )
+
+    # 필터 적용 로직
+    temp_df = st.session_state.my_data_v3.copy()
+    
+    # 1. 검색어 적용
     if search_query:
         mask = temp_df.drop(columns=['선택']).astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)
         temp_df = temp_df[mask]
 
+    # 2. 다중 체크 필터 적용
+    if selected_filter_col != "선택 안 함" and selected_items:
+        temp_df = temp_df[temp_df[selected_filter_col].astype(str).isin(selected_items)]
+
+    # 3. 화면에 표시할 열만 추리기
     display_df = temp_df[['선택'] + selected_view_cols]
 
-    # --- 데이터 표 ---
-    st.caption("💡 우측으로 스크롤하면 **'계산된 박스수', '계산된 총 무게'** 열이 보입니다.")
-    edited_df = st.data_editor(display_df, use_container_width=True, height=400, hide_index=True, key="main_editor")
+    # --- ✅ 선택 버튼 컨트롤 ---
+    st.write("")
+    col_btn1, col_btn2, _ = st.columns([2, 2, 6])
+    with col_btn1:
+        if st.button("✅ 현재 보이는 목록 전체 선택"):
+            st.session_state.my_data_v3.loc[display_df.index, '선택'] = True
+            st.rerun()
+    with col_btn2:
+        if st.button("❌ 전체 선택 해제"):
+            st.session_state.my_data_v3.loc[display_df.index, '선택'] = False
+            st.rerun()
+
+    st.caption("💡 팁: 표 맨 위 제목을 클릭해 실수로 정렬이 꼬였다면, 제목을 한두 번 더 눌러 화살표(↑,↓)를 없애면 원래대로 돌아옵니다.")
+
+    # --- 📑 데이터 표 (에디터) ---
+    r_col_name = raw_df.columns[17] if 17 < max_col else None
+    # '선택' 열과 인보이스 열만 수정 가능하게 하고 나머지는 읽기 전용 처리
+    disabled_cols = [col for col in display_df.columns if col not in ['선택', r_col_name]]
+
+    edited_df = st.data_editor(
+        display_df,
+        disabled=disabled_cols,
+        use_container_width=True,
+        height=400,
+        hide_index=True,
+        key="main_editor"
+    )
 
     if not edited_df.equals(display_df):
-        st.session_state.my_data_v2.update(edited_df)
+        st.session_state.my_data_v3.update(edited_df)
         st.rerun()
 
     # --- 📧 메일 양식 및 복사 기능 ---
     st.divider()
-    selected_rows = st.session_state.my_data_v2[st.session_state.my_data_v2['선택'] == True]
+    selected_rows = st.session_state.my_data_v3[st.session_state.my_data_v3['선택'] == True]
 
     if not selected_rows.empty:
-        st.markdown("### 📧 메일 양식")
+        st.markdown("### 📧 메일 양식 복사 및 보내기")
         
         # INVOICE 정리
         r_col_name = raw_df.columns[17] if 17 < max_col else "INVOICE"
         invoice_list = selected_rows[r_col_name].dropna().astype(str).unique()
         invoice_text = ", ".join(invoice_list)
         
-        # 총 박스 수 및 총 무게 추출
+        # 총 박스 수 및 총 무게 추출 로직
         def extract_box_num(val):
             if pd.isna(val) or val == '합포장' or val == '': return 0
             nums = re.findall(r'\d+', str(val))
@@ -172,14 +221,14 @@ try:
         total_boxes = selected_rows['계산된 박스수'].apply(extract_box_num).sum() if '계산된 박스수' in selected_rows.columns else 0
         total_weight = selected_rows['계산된 총 무게'].fillna(0).sum() if '계산된 총 무게' in selected_rows.columns else 0
         
-        # 테이블 HTML 생성
+        # 메일용 테이블 (사용자가 선택한 열만 포함)
         mail_data = selected_rows[selected_view_cols]
         html_table = mail_data.to_html(index=False, border=1)
 
-        # 실제 복사될 텍스트 구성 (HTML 포함) - 총 박스수/무게 추가
+        # 실제 복사될 메일 내용 구성
         full_mail_content = f"""안녕하세요,<br>하기의 건으로 출하요청 드립니다.<br><br><b>출하요청일 :</b> <br><b>INVOICE :</b> {invoice_text}<br><b>총 박스 수 / 무게 :</b> {total_boxes} BOX / {total_weight:,.2f} kg<br><br>{html_table}"""
 
-        # 복사하기 버튼 + 미리보기 박스
+        # 원클릭 복사 버튼 및 미리보기 박스 생성
         copy_and_preview_html = f"""
         <div id="email-area" style="background-color: white; padding: 20px; border: 2px dashed #007BFF; border-radius: 8px; color: black; font-family: 'Malgun Gothic', sans-serif;">
             {full_mail_content}
@@ -204,9 +253,9 @@ try:
         """
         components.html(copy_and_preview_html, height=450, scrolling=True)
 
-        # --- 메일 앱 호출 버튼 ---
-        st.markdown("#### 🚀 아웃룩이 안 뜬다면?")
-        st.caption("아래 버튼을 눌러도 반응이 없다면, 윈도우 설정에서 '기본 메일 앱'을 Outlook으로 설정해야 합니다.")
+        # 아웃룩 호출 버튼
+        st.markdown("#### 🚀 2단계: 메일 프로그램 열기")
+        st.caption("위에서 [📋 양식 복사하기]를 눌러 복사한 후, 아래 버튼을 눌러 아웃룩을 띄워 붙여넣으세요.")
         
         subject = urllib.parse.quote("출하요청 드립니다.")
         body = urllib.parse.quote(f"안녕하세요,\n\n출하요청 건입니다.\nINVOICE: {invoice_text}\n총 박스 수 / 무게 : {total_boxes} BOX / {total_weight:,.2f} kg\n\n(여기에 복사한 내용을 붙여넣으세요)")
@@ -220,7 +269,7 @@ try:
         """, unsafe_allow_html=True)
 
     else:
-        st.info("💡 항목을 선택하면 복사 버튼과 메일 양식이 나타납니다.")
+        st.info("💡 위 표에서 보낼 항목의 **'선택'** 체크박스를 클릭하면 복사 버튼과 메일 양식이 나타납니다.")
 
 except Exception as e:
     st.error(f"오류: {e}")
