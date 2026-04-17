@@ -24,7 +24,7 @@ def load_data():
 
 # 부서 프로그램의 무게 및 박스수 계산 로직
 def parse_packing_string(val, is_size=False):
-    if pd.isna(val) or str(val).strip() in ['', '-', '0', '""']:
+    if pd.isna(val) or str(val).strip() in ['', '-', '0', '""', 'nan', 'None']:
         return {'is_ditto': False, 'total_qty': 0, 'total_val': 0.0, 'formatted': ''}
         
     val = str(val).strip()
@@ -83,12 +83,13 @@ try:
     if raw_df.empty:
         st.stop()
 
-    # 데이터 설정 및 세션 저장
+    # 데이터 설정
     col_indices = [0, 1, 2, 3, 4, 5, 15, 16, 17, 20, 21]
     max_col = len(raw_df.columns)
     valid_indices = [i for i in col_indices if i < max_col]
 
-    if 'my_data' not in st.session_state:
+    # 🌟 [핵심 변경] 세션 키를 my_data_v2로 변경하여 강제 초기화 유도
+    if 'my_data_v2' not in st.session_state:
         selected_df = raw_df.iloc[:, valid_indices].copy()
         
         # P열(15)과 Q열(16) 데이터 자동 계산 적용
@@ -117,11 +118,12 @@ try:
             selected_df = pd.concat([selected_df, calc_df], axis=1)
 
         selected_df.insert(0, '선택', False)
-        st.session_state.my_data = selected_df
+        st.session_state.my_data_v2 = selected_df
 
-    if st.button("🔄 데이터 새로고침"):
+    if st.button("🔄 구글 시트 최신 데이터로 새로고침"):
         st.cache_data.clear()
-        del st.session_state.my_data
+        if 'my_data_v2' in st.session_state:
+            del st.session_state.my_data_v2
         st.rerun()
 
     # --- 필터 및 검색 ---
@@ -130,11 +132,11 @@ try:
     with col_search:
         search_query = st.text_input("⌨️ 통합 검색", placeholder="검색어 입력")
     
-    all_columns = [col for col in st.session_state.my_data.columns if col != '선택']
+    all_columns = [col for col in st.session_state.my_data_v2.columns if col != '선택']
     selected_view_cols = st.multiselect("👁️ 표에 보여줄 열 선택", options=all_columns, default=all_columns)
 
     # 필터 적용
-    temp_df = st.session_state.my_data.copy()
+    temp_df = st.session_state.my_data_v2.copy()
     if search_query:
         mask = temp_df.drop(columns=['선택']).astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)
         temp_df = temp_df[mask]
@@ -142,16 +144,16 @@ try:
     display_df = temp_df[['선택'] + selected_view_cols]
 
     # --- 데이터 표 ---
-    st.caption("💡 새롭게 추가된 **'계산된 박스수', '계산된 총 무게', '정리된 규격'** 열을 확인해 보세요.")
+    st.caption("💡 우측으로 스크롤하면 **'계산된 박스수', '계산된 총 무게'** 열이 보입니다.")
     edited_df = st.data_editor(display_df, use_container_width=True, height=400, hide_index=True, key="main_editor")
 
     if not edited_df.equals(display_df):
-        st.session_state.my_data.update(edited_df)
+        st.session_state.my_data_v2.update(edited_df)
         st.rerun()
 
     # --- 📧 메일 양식 및 복사 기능 ---
     st.divider()
-    selected_rows = st.session_state.my_data[st.session_state.my_data['선택'] == True]
+    selected_rows = st.session_state.my_data_v2[st.session_state.my_data_v2['선택'] == True]
 
     if not selected_rows.empty:
         st.markdown("### 📧 메일 양식")
@@ -161,23 +163,23 @@ try:
         invoice_list = selected_rows[r_col_name].dropna().astype(str).unique()
         invoice_text = ", ".join(invoice_list)
         
-        # 🌟 [추가됨] 총 박스 수 및 총 무게 계산
+        # 총 박스 수 및 총 무게 추출
         def extract_box_num(val):
-            if pd.isna(val) or val == '합포장': return 0
+            if pd.isna(val) or val == '합포장' or val == '': return 0
             nums = re.findall(r'\d+', str(val))
             return int(nums[0]) if nums else 0
             
         total_boxes = selected_rows['계산된 박스수'].apply(extract_box_num).sum() if '계산된 박스수' in selected_rows.columns else 0
-        total_weight = selected_rows['계산된 총 무게'].sum() if '계산된 총 무게' in selected_rows.columns else 0
+        total_weight = selected_rows['계산된 총 무게'].fillna(0).sum() if '계산된 총 무게' in selected_rows.columns else 0
         
         # 테이블 HTML 생성
         mail_data = selected_rows[selected_view_cols]
         html_table = mail_data.to_html(index=False, border=1)
 
-        # 🌟 [수정됨] 실제 복사될 텍스트 구성 (HTML 포함) - 총 박스수/무게 추가
+        # 실제 복사될 텍스트 구성 (HTML 포함) - 총 박스수/무게 추가
         full_mail_content = f"""안녕하세요,<br>하기의 건으로 출하요청 드립니다.<br><br><b>출하요청일 :</b> <br><b>INVOICE :</b> {invoice_text}<br><b>총 박스 수 / 무게 :</b> {total_boxes} BOX / {total_weight:,.2f} kg<br><br>{html_table}"""
 
-        # 복사하기 버튼 + 미리보기 박스 (JavaScript 포함)
+        # 복사하기 버튼 + 미리보기 박스
         copy_and_preview_html = f"""
         <div id="email-area" style="background-color: white; padding: 20px; border: 2px dashed #007BFF; border-radius: 8px; color: black; font-family: 'Malgun Gothic', sans-serif;">
             {full_mail_content}
