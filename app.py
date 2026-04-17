@@ -23,7 +23,7 @@ def load_data():
         st.error(f"데이터 로드 중 오류 발생: {e}")
         return pd.DataFrame()
 
-# 🌟 [개선됨] 부서 프로그램의 무게 및 규격 분리 로직 완벽 적용
+# 부서 프로그램의 무게 및 규격 분리 로직
 def parse_packing_string(val, is_size=False):
     if pd.isna(val) or str(val).strip() in ['', '-', '0', '""', 'nan', 'None']:
         return {'is_ditto': False, 'total_qty': 0, 'total_val': 0.0, 'formatted': '', 'line_data': []}
@@ -43,29 +43,23 @@ def parse_packing_string(val, is_size=False):
         value_part = line.strip()
         
         if is_size:
-            # 치수 데이터 분리 (예: 420*300*300 x5ea -> ['420', '300', '300', '5ea'])
             parts = [p.strip() for p in re.split(r'[xX*]', value_part)]
             if len(parts) >= 4:
                 last_part = parts[-1]
-                # 마지막 파트에서 숫자만 추출 (예: '5ea' -> '5')
                 qty_match = re.match(r'^(\d+)', last_part)
                 if qty_match:
                     qty = int(qty_match.group(1))
-                    # 앞에 3개 치수만 묶어서 표준화
                     value_part = f"{parts[0]}*{parts[1]}*{parts[2]}"
                 else:
                     value_part = f"{parts[0]}*{parts[1]}*{parts[2]}"
             elif len(parts) == 3:
                 value_part = f"{parts[0]}*{parts[1]}*{parts[2]}"
             else:
-                # 예외적인 형식일 경우를 대비한 안전장치
                 fallback_match = re.search(r'[xX*]\s*(\d+)\s*(ea|box|bxs)?\b', value_part, re.IGNORECASE)
                 if fallback_match:
                     qty = int(fallback_match.group(1))
                     value_part = value_part[:fallback_match.start()].strip()
-
         else:
-            # 무게 데이터 처리 (기존과 동일)
             explicit_match = re.search(r'[xX*]\s*(\d+)\s*(ea|box|bxs|ctns?|boxes)?\b', value_part, re.IGNORECASE)
             if explicit_match:
                 qty = int(explicit_match.group(1))
@@ -79,8 +73,6 @@ def parse_packing_string(val, is_size=False):
                 
         total_qty += qty
         formatted_lines.append(f"{value_part} x {qty}EA" if qty > 1 else value_part)
-        
-        # 합산표를 위해 표준화된 치수 문자열 저장
         line_data.append({'value': value_part, 'qty': qty})
         
     return {
@@ -104,8 +96,8 @@ try:
     max_col = len(raw_df.columns)
     valid_indices = [i for i in col_indices if i < max_col]
 
-    # 세션 키 업데이트 (my_data_v5)
-    if 'my_data_v5' not in st.session_state:
+    # 세션 키 업데이트 (my_data_v7)
+    if 'my_data_v7' not in st.session_state:
         selected_df = raw_df.iloc[:, valid_indices].copy()
         
         if 15 < max_col and 16 < max_col:
@@ -135,47 +127,66 @@ try:
         if '출처_시트' not in selected_df.columns:
             selected_df.insert(1, '출처_시트', raw_df['출처_시트'])
             
-        st.session_state.my_data_v5 = selected_df
+        st.session_state.my_data_v7 = selected_df
 
     if st.button("🔄 구글 시트 최신 데이터로 새로고침"):
         st.cache_data.clear()
-        if 'my_data_v5' in st.session_state:
-            del st.session_state.my_data_v5
+        if 'my_data_v7' in st.session_state:
+            del st.session_state.my_data_v7
         st.rerun()
 
     st.divider()
 
-    # --- 검색 및 상세 필터 ---
+    # --- 검색 및 필터 UI ---
     st.markdown("### 🔎 검색 및 상세 필터")
+    
+    # 🌟 [수정됨] 체크박스 텍스트 간소화
+    u_col_name = raw_df.columns[20] if 20 < max_col else None
+    show_received_only = False
+    if u_col_name:
+        show_received_only = st.checkbox("📦 입고 완료 항목", value=False)
+        st.write("") # 간격 띄우기
+
     col_search, col_filter1, col_filter2 = st.columns([2, 1, 1])
     
     with col_search:
         search_query = st.text_input("⌨️ 텍스트 통합 검색", placeholder="거래처명, INVOICE 번호 등 아무거나 입력하세요")
         
     with col_filter1:
-        filter_cols = [col for col in st.session_state.my_data_v5.columns if col != '선택']
+        filter_cols = [col for col in st.session_state.my_data_v7.columns if col != '선택']
         selected_filter_col = st.selectbox("📂 필터 걸 열 선택", ["선택 안 함"] + filter_cols)
         
     with col_filter2:
         selected_items = []
         if selected_filter_col != "선택 안 함":
-            unique_values = st.session_state.my_data_v5[selected_filter_col].dropna().astype(str).unique().tolist()
+            unique_values = st.session_state.my_data_v7[selected_filter_col].dropna().astype(str).unique().tolist()
             selected_items = st.multiselect("📌 항목 체크", unique_values, placeholder="원하는 항목 고르기")
 
     st.write("")
-    all_columns = [col for col in st.session_state.my_data_v5.columns if col != '선택']
+    all_columns = [col for col in st.session_state.my_data_v7.columns if col != '선택']
     selected_view_cols = st.multiselect(
         "👁️ 표에 보여줄 열 선택 (여기서 제외하면 메일 양식에서도 빠집니다)", 
         options=all_columns, 
         default=all_columns
     )
 
-    temp_df = st.session_state.my_data_v5.copy()
+    # --- 필터 로직 적용 ---
+    temp_df = st.session_state.my_data_v7.copy()
     
+    # 1. 입고 여부 필터 (U열 내용 있음)
+    if show_received_only and u_col_name in temp_df.columns:
+        mask_received = temp_df[u_col_name].notna() & \
+                        (temp_df[u_col_name].astype(str).str.strip() != '') & \
+                        (temp_df[u_col_name].astype(str).str.strip().str.lower() != 'nan') & \
+                        (temp_df[u_col_name].astype(str).str.strip().str.lower() != 'nat')
+        temp_df = temp_df[mask_received]
+
+    # 2. 텍스트 검색어 필터
     if search_query:
         mask = temp_df.drop(columns=['선택']).astype(str).apply(lambda x: x.str.contains(search_query, case=False, na=False)).any(axis=1)
         temp_df = temp_df[mask]
 
+    # 3. 상세 항목 체크 필터
     if selected_filter_col != "선택 안 함" and selected_items:
         temp_df = temp_df[temp_df[selected_filter_col].astype(str).isin(selected_items)]
 
@@ -185,11 +196,11 @@ try:
     col_btn1, col_btn2, _ = st.columns([2, 2, 6])
     with col_btn1:
         if st.button("✅ 현재 보이는 목록 전체 선택"):
-            st.session_state.my_data_v5.loc[display_df.index, '선택'] = True
+            st.session_state.my_data_v7.loc[display_df.index, '선택'] = True
             st.rerun()
     with col_btn2:
         if st.button("❌ 전체 선택 해제"):
-            st.session_state.my_data_v5.loc[display_df.index, '선택'] = False
+            st.session_state.my_data_v7.loc[display_df.index, '선택'] = False
             st.rerun()
 
     st.caption("💡 팁: 표 맨 위 제목을 클릭해 실수로 정렬이 꼬였다면, 제목을 한두 번 더 눌러 화살표(↑,↓)를 없애면 원래대로 돌아옵니다.")
@@ -208,12 +219,12 @@ try:
     )
 
     if not edited_df.equals(display_df):
-        st.session_state.my_data_v5.update(edited_df)
+        st.session_state.my_data_v7.update(edited_df)
         st.rerun()
 
     # --- 📧 메일 양식 생성 ---
     st.divider()
-    selected_rows = st.session_state.my_data_v5[st.session_state.my_data_v5['선택'] == True]
+    selected_rows = st.session_state.my_data_v7[st.session_state.my_data_v7['선택'] == True]
 
     if not selected_rows.empty:
         st.markdown("### 📧 메일 양식 복사 및 보내기")
@@ -230,7 +241,6 @@ try:
         total_boxes = selected_rows['계산된 박스수'].apply(extract_box_num).sum() if '계산된 박스수' in selected_rows.columns else 0
         total_weight = selected_rows['계산된 총 무게'].fillna(0).sum() if '계산된 총 무게' in selected_rows.columns else 0
         
-        # 🌟 규격별 박스 수 합산 표 생성 (박스 글자 제거)
         size_html_table = ""
         size_text_for_mailto = ""
         q_col_name = raw_df.columns[16] if 16 < max_col else None
@@ -248,7 +258,6 @@ try:
                 size_table_rows = ""
                 size_text_for_mailto = "\n[ 규격별 박스 수 ]\n"
                 
-                # 🌟 수정됨: 박스 수 열에 숫자({qty})만 기입되도록 변경
                 for size_name, qty in size_map.items():
                     size_table_rows += f"<tr><td style='padding: 6px 12px; border: 1px solid #c0c0c0;'>{size_name}</td><td style='padding: 6px 12px; border: 1px solid #c0c0c0; text-align: center;'>{qty}</td></tr>"
                     size_text_for_mailto += f"- {size_name} : {qty}\n"
